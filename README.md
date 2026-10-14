@@ -1,13 +1,13 @@
-# Snuffles: Local Multimodal RAG System 🐶
+# Snuffles: Local Multi model RAG System
 
-![Snuffles hunden](images/snuffles_image.png)
+<img src="images/snuffles_image.png" alt="Snuffles" width="300">
 
-Snuffles är en helt lokal, privat och säker Retrieval-Augmented Generation (RAG) motor byggd i Python. Projektet syftar till att analysera dokument (PDF) och bilder genom att integrera lokala AI-modeller och vektordatabaser, med ett strikt fokus på dataintegritet.
+Snuffles is a fully local, private, and secure Retrieval-Augmented Generation (RAG) engine built in Python. The project aims to analyze documents (PDFs) and images by integrating local AI models and vector databases, with a strict focus on data privacy.
 
-## 🚀 Arkitektur och Teknikstack
-- **100% Lokalt:** All data, indexering och vektorisering hanteras lokalt på maskinen utan externa molnanrop.
-- **Vektordatabas:** [ChromaDB](https://www.trychroma.com/) för persistent lokal lagring av dokument-embeddings.
-- **Modellserver:** [oMLX](https://github.com/omlx/omlx) körs lokalt och agerar inferensmotor.
-- **Modeller:**
-  - `embeddinggemma-2` för att omvandla text och dokument till sökbara vektorer.
-  - `gemma-4` för slutgiltig textgenerering och multimodal analys.
+## 🚀 Architecture and Tech Stack
+- **100% Local:** All data, indexing, and vectorization are handled locally on the machine without external cloud calls.
+- **Vector Database:** [ChromaDB](https://www.trychroma.com/) for persistent local storage of document embeddings.
+- **Model Server:** [oMLX](https://github.com/omlx/omlx) running locally as the inference engine.
+- **Models:**
+  - `embeddinggemma-2` to convert text and documents into searchable vectors.
+  - `gemma-4` for final text generation and multimodal analysis.
