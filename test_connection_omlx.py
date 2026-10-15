@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # Laddar in de hemliga variablerna från .env-filen
 load_dotenv()
 
-print("--- Testar anslutningar för Snuffles ---")
+print("--- Testing Connections for Snuffles ---")
 
 # 1. Verifiera kontakt med oMLX säkert
 try:
@@ -17,21 +17,21 @@ try:
     res = requests.get("http://127.0.0.1:8000/v1/models", headers=headers, timeout=5)
     if res.status_code == 200:
         models = [m["id"] for m in res.json().get("data", [])]
-        print(f"[OK] Kontakt med oMLX! Aktiva modeller: {models}")
+        print(f"[OK] Contact with oMLX! Active models: {models}")
     else:
-        print(f"[VARNING] oMLX svarade med statuskod: {res.status_code}")
+        print(f"[Warning] oMLX responded with status code: {res.status_code}")
 except Exception as e:
-    print(f"[FEL] Kunde inte nå oMLX på port 8000: {e}")
+    print(f"[Error] Could not reach oMLX on port 8000: {e}")
 
 # 2. Verifiera persistent ChromaDB
 try:
     client = chromadb.PersistentClient(path="./chroma_db")
     collection = client.get_or_create_collection(name="snuffles_test")
     collection.add(
-        documents=["Detta är en testvektor."],
+        documents=["This is a testvector."],
         ids=["id1"]
     )
     count = collection.count()
-    print(f"[OK] ChromaDB sparar lokalt! Antal objekt i testdatabasen: {count}")
+    print(f"[OK] ChromaDB saves locally! Number of objects in test database: {count}")
 except Exception as e:
-    print(f"[FEL] Fel vid initiering av ChromaDB: {e}")
+    print(f"[Error] Error during ChromaDB initialization: {e}")
