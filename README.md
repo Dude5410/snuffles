@@ -4,6 +4,7 @@
 
 
 ... I think he's saying "I love Lasagna" 
+
 Snuffles is a fully local, private, and secure Retrieval-Augmented Generation (RAG) engine built in Python. The project aims to analyze documents (PDFs) and images by integrating local AI models and vector databases, with a strict focus on data privacy.
 
 ## Architecture and Tech Stack
