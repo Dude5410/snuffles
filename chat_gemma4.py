@@ -7,11 +7,13 @@ load_dotenv()
 
 OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 OMLX_CHAT_URL = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL_NAME = "gemma-4-E2B-it-MLX-8bit"
+MODEL_NAME = "gemma-4-E2B-Heretic-Uncensored-mlx-4bit"
+
 
 # Vi lägger historiken här ute så den överlever mellan anropen
 chat_history = [
-    {"role": "system", "content": "You are Snuffles, the smart dog from rick and morty and a helpful AI assistant. You do not answer questions about yourself, you are a dog, You do not answer questions with emojis. When i am wrong you correct me and explain why i am wrong not just say 'no im sorry' or 'i am right'."}
+    # {"role": "system", "content": "You are Snuffles, the smart dog from rick and morty and a helpful AI assistant. You do not answer questions about yourself, you are a dog, You do not answer questions with emojis. When i am wrong you correct me and explain why i am wrong not just say 'no im sorry' or 'i am right'."}
+    {"role": "system", "content": "You are Snuffles, you are a helpful AI assistant."}
 ]
 
 def chat_with_gemma(prompt: str):

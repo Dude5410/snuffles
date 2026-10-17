@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 chroma_db/
 .env
+snuffles_files/
