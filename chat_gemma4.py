@@ -7,7 +7,7 @@ load_dotenv()
 
 OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 OMLX_CHAT_URL = "http://127.0.0.1:8000/v1/chat/completions"
-MODEL_NAME = "gemma-4-E2B-Heretic-Uncensored-mlx-4bit"
+MODEL_NAME = "gemma-4-E2B-it-MLX-8bit"
 
 
 # Vi lägger historiken här ute så den överlever mellan anropen
