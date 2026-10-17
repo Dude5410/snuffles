@@ -9,18 +9,18 @@ load_dotenv()
 
 OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 OMLX_EMBEDDING_URL = "http://127.0.0.1:8000/v1/embeddings"
+EMBEDDING_MODEL_NAME = "embeddinggemma-2-bf16"
 
-# UPPDATERA DENNA TILL NAMNET PÅ DIN EMBEDDING-MODELL (t.ex. "gemma-2-embedding")
-EMBEDDING_MODEL_NAME = "embeddinggemma-2-bf16" 
 
-# --- STEG 1: Skapa bryggan mellan ChromaDB och oMLX ---
 class OMLXEmbeddingFunction(EmbeddingFunction):
+    def __init__(self):
+        pass
+
     def __call__(self, input: Documents) -> Embeddings:
         headers = {
             "Authorization": f"Bearer {OMLX_API_KEY}",
             "Content-Type": "application/json"
         }
-        
         embeddings = []
         for text in input:
             payload = {
@@ -33,27 +33,41 @@ class OMLXEmbeddingFunction(EmbeddingFunction):
                 vector = res.json()["data"][0]["embedding"]
                 embeddings.append(vector)
             except Exception as e:
-                print(f"Error creating vector for text: {e}")
-                
+                print(f"Error during vectorization: {e}")
         return embeddings
 
-# --- STEG 2: Starta databasen ---
-print("Starting ChromaDB...")
+
+print("Connecting to ChromaDB...")
 client = chromadb.PersistentClient(path="./chroma_db")
 omlx_ef = OMLXEmbeddingFunction()
 
-# Vi kallar databasen för snuffles_docs och kopplar vår embedding-funktion
-collection = client.get_or_create_collection(
-    name="snuffles_docs",
-    embedding_function=omlx_ef
-)
+try:
+    client.delete_collection(name="snuffles_docs")
+except Exception:
+    pass
 
-# --- STEG 3: Läs igenom mappen (Nu med PDF-stöd!) ---
-def index_folder(folder_path: str):
-    print(f"Searching folder: '{folder_path}'...")
+collection = client.get_or_create_collection(name="snuffles_docs", embedding_function=omlx_ef)
+
+
+def split_text_into_chunks(text: str, chunk_size: int = 1000, overlap: int = 150):
+    """Splits text into overlapping segments to preserve context across boundaries."""
+    chunks = []
+    start = 0
+    text_length = len(text)
     
+    while start < text_length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk.strip())
+        start += chunk_size - overlap
+        
+    return [c for c in chunks if c]
+
+
+def index_folder(folder_path: str):
+    print(f"Scanning folder: '{folder_path}'...")
     if not os.path.exists(folder_path):
-        print(f"Folder '{folder_path}' does not exist. Create it and place some files there.")
+        print(f"Folder '{folder_path}' does not exist.")
         return
 
     documents = []
@@ -62,59 +76,74 @@ def index_folder(folder_path: str):
 
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
-        
-        # 1. Hantera Text & Markdown
-        if filename.lower().endswith(".txt") or filename.lower().endswith(".md"):
+
+        # 1. Plain text & Markdown
+        if filename.lower().endswith((".txt", ".md")):
             with open(file_path, "r", encoding="utf-8") as file:
                 content = file.read()
                 if content.strip():
-                    documents.append(content)
-                    metadatas.append({"filename": filename})
-                    ids.append(filename)
-                    print(f"Found text file: {filename}")
-                    
-        # 2. Hantera PDF-filer
+                    chunks = split_text_into_chunks(content)
+                    for idx, chunk in enumerate(chunks):
+                        documents.append(chunk)
+                        metadatas.append({
+                            "filename": filename,
+                            "page": 1,
+                            "chunk_index": idx
+                        })
+                        ids.append(f"{filename}_p1_c{idx}")
+
+        # 2. PDF processing with page-level tracking
+        # 2. PDF processing with page-level tracking (and true page labels)
         elif filename.lower().endswith(".pdf"):
             try:
                 reader = pypdf.PdfReader(file_path)
-                content = ""
-                # Plocka ut texten från varje sida
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        content += page_text + "\n"
-                
-                if content.strip():
-                    documents.append(content)
-                    metadatas.append({"filename": filename})
-                    ids.append(filename)
-                    print(f"Extracted text from PDF: {filename}")
+                total_pages = len(reader.pages)
+                print(f"Processing PDF '{filename}' ({total_pages} pages)...")
+
+                # Check if the PDF has embedded page labels (e.g. from LaTeX)
+                has_page_labels = False
+                try:
+                    labels = reader.page_labels
+                    if labels and len(labels) == total_pages:
+                        has_page_labels = True
+                except Exception:
+                    has_page_labels = False
+
+                for page_idx, page in enumerate(reader.pages):
+                    # Use document page label if available, otherwise physical page number
+                    if has_page_labels:
+                        page_label = str(labels[page_idx])
+                    else:
+                        page_label = str(page_idx + 1)
+
+                    page_text = page.extract_text() or ""
+                    
+                    if page_text.strip():
+                        chunks = split_text_into_chunks(page_text)
+                        for chunk_idx, chunk in enumerate(chunks):
+                            documents.append(chunk)
+                            metadatas.append({
+                                "filename": filename,
+                                "page": page_label,
+                                "chunk_index": chunk_idx
+                            })
+                            ids.append(f"{filename}_p{page_label}_c{chunk_idx}")
+
             except Exception as e:
-                print(f"Could not read PDF {filename}: {e}")
+                print(f"Failed to read PDF '{filename}': {e}")
 
-        # 3. Känner igen bilder, men hoppar över dem
-        elif filename.lower().endswith((".png", ".jpg", ".jpeg")):
-            print(f"Found image: {filename} - (Skipping: Requires Vision model for text indexing)")
-
-    # --- STEG 4: Spara i databasen ---
     if documents:
-        print("\nSending text to your oMLX model for vectorization...")
-        print("This may take a moment depending on the amount of text you have in the files.")
-        
+        print(f"\nSending {len(documents)} text chunks to oMLX for embedding...")
         collection.add(
             documents=documents,
             metadatas=metadatas,
             ids=ids
         )
-        print(f"\n[Added] {len(documents)} files to the database.")
+        print(f"[OK] Successfully indexed {len(documents)} entries into 'snuffles_docs'.")
     else:
-        print("\nDid not find any text or PDF files to index. Add some files to the folder and rerun the script.")
+        print("No documents found to index.")
+
 
 if __name__ == "__main__":
-    mapp_att_lasa_in = "/Users/johnbodeklint/dev/snuffles/snuffles_files" 
-    
-    if not os.path.exists(mapp_att_lasa_in):
-        os.makedirs(mapp_att_lasa_in)
-        print(f"Created a new folder called '{mapp_att_lasa_in}'. Place your PDFs and text files there and run the script again!")
-    else:
-        index_folder(mapp_att_lasa_in)
+    folder_to_index = "snuffles_files"
+    index_folder(folder_to_index)

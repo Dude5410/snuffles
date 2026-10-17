@@ -1,9 +1,11 @@
+from multiprocessing import context
 import os
 import requests
 import json
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from dotenv import load_dotenv
+from typer import prompt
 
 load_dotenv()
 
@@ -64,13 +66,16 @@ def chat_with_gemma(prompt: str):
         "Authorization": f"Bearer {OMLX_API_KEY}",
         "Content-Type": "application/json"
     }
+    bypass_phrases = ["own knowledge", "egen kunskap", "utan dokument", "general knowledge"]
+    skip_rag = any(phrase in prompt.lower() for phrase in bypass_phrases)
     
     context = ""
-    if collection:
+    used_sources = []
+    if collection and not skip_rag:
         # Make chromadb to find distance between the prompt and the documents in the collection
         results = collection.query(
             query_texts=[prompt],
-            n_results=2,
+            n_results=4,
             include=["documents", "distances", "metadatas"]
         )
         
@@ -80,19 +85,28 @@ def chat_with_gemma(prompt: str):
             matching_docs = []
             
             # Threshold to determine if a document is relevant enough to include in the context
-            DISTANCE_THRESHOLD = 0.65 
+            DISTANCE_THRESHOLD = 0.52 
             
             for i, (doc, dist) in enumerate(zip(results['documents'][0], results['distances'][0])):
                 source = results['metadatas'][0][i].get('filename', 'Unknown file') if results.get('metadatas') else 'Unknown file'
                 accepted = dist < DISTANCE_THRESHOLD
                 
                 # ChromaDB returns distances where lower is better, so we check if the distance is below our threshold
-                status_str = "Let through" if accepted else "Blocked"
+                status_str = "Relevant" if accepted else "Not enough relevance (neglected)"
                 print(f"Hit {i+1} | File: {source} | Distance: {dist:.4f} -> [{status_str}]")
                 
                 if accepted:
                     matching_docs.append(doc)
-            
+                
+                    # Extract filename and page number from metadata
+                    meta = results['metadatas'][0][i] if results.get('metadatas') else {}
+                    source_file = meta.get('filename', 'Unknown file')
+                    page_num = meta.get('page', None)
+                
+                    source_label = f"{source_file} (Page {page_num})" if page_num else source_file
+                if source_label not in used_sources:
+                    used_sources.append(source_label)
+
             print("---------------------------------\n")
             
             if matching_docs:
@@ -102,11 +116,13 @@ def chat_with_gemma(prompt: str):
             print("---------------------------------\n")
     # Build the augmented prompt with context if available
     if context:
+        
         augmented_prompt = (
-            f"Following is the relevant context:\n\n{context}\n\n"
-            f"Answer: {prompt}\n\n"
-            f"Answer the question based on the provided context, "
-            f"and if the context does not contain the answer, please answer based on your own knowledge. "
+        f"Document Context:\n{context}\n\n"
+        f"Question: {prompt}\n\n"
+        f"Instruction: If the user explicitly asks you to answer from your own knowledge "
+        f"or to ignore the context, disregard the documents above completely. Otherwise, "
+        f"primarily use the provided documents if they contain the answer to the question."
         )
     else:
         # If no context is found, we just use the original prompt and models own knowledge
@@ -156,7 +172,11 @@ def chat_with_gemma(prompt: str):
                         pass
         
         print("\n")
-        
+        if used_sources:
+          print(" Sources used:")
+          for src in used_sources:
+            print(f"  • {src}")
+          print()
         # If we got a full answer, we update the last user message to be the original prompt and append the assistant's response
         if full_answer:
             chat_history[-1]["content"] = prompt 
