@@ -2,6 +2,7 @@ import os
 import requests
 import chromadb
 import pypdf
+import base64  # New import required for handling images
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from dotenv import load_dotenv
 
@@ -22,10 +23,18 @@ class OMLXEmbeddingFunction(EmbeddingFunction):
             "Content-Type": "application/json"
         }
         embeddings = []
-        for text in input:
-            payload = {
+        for item in input:
+            if item.startswith("data:image/"):
+                payload = {
+                    "model": EMBEDDING_MODEL_NAME,
+                    "input": item  
+                    # OBS: Om din oMLX-server kräver ett annat format för bilder (t.ex. "image": item), 
+                    # är det här vi justerar det senare. De flesta kompatibla API:er löser detta via 'input'.
+                }
+            else:
+                payload = {
                 "model": EMBEDDING_MODEL_NAME,
-                "input": text
+                "input": item
             }
             try:
                 res = requests.post(OMLX_EMBEDDING_URL, json=payload, headers=headers)
@@ -93,7 +102,7 @@ def index_folder(folder_path: str):
                         ids.append(f"{filename}_p1_c{idx}")
 
         # 2. PDF processing with page-level tracking
-        # 2. PDF processing with page-level tracking (and true page labels)
+        
         elif filename.lower().endswith(".pdf"):
             try:
                 reader = pypdf.PdfReader(file_path)
@@ -128,10 +137,32 @@ def index_folder(folder_path: str):
                                 "chunk_index": chunk_idx
                             })
                             ids.append(f"{filename}_p{page_label}_c{chunk_idx}")
-
+        
             except Exception as e:
                 print(f"Failed to read PDF '{filename}': {e}")
-
+        # 3. Image processing (Convert to Base64)
+        elif filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            print(f"Processing Image '{filename}'...")
+            try:
+                with open(file_path, "rb") as image_file:
+                    # Read the binary image data and encode it to a base64 string
+                    encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    
+                    # Create the standard Data URI format required by most vision/embedding APIs
+                    file_ext = "jpeg" if filename.lower().endswith(".jpg") else filename.split('.')[-1].lower()
+                    base64_image = f"data:image/{file_ext};base64,{encoded_string}"
+                    
+                    documents.append(base64_image)
+                    metadatas.append({
+                        "filename": filename,
+                        "page": "Image",
+                        "chunk_index": 0,
+                        "is_image": True  # Denna flagga blir livsviktig i chatten sen!
+                    })
+                    ids.append(f"{filename}_img")
+                    
+            except Exception as e:
+                print(f"Failed to read image '{filename}': {e}")
     if documents:
         print(f"\nSending {len(documents)} text chunks to oMLX for embedding...")
         collection.add(
