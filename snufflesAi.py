@@ -83,30 +83,38 @@ def chat_with_gemma(prompt: str):
         print("\n--- [Relevance Analysis from documents (lower is better)] ---")
         if results['documents'] and results['documents'][0]:
             matching_docs = []
+            retrieved_images = []
             
             # Threshold to determine if a document is relevant enough to include in the context
-            DISTANCE_THRESHOLD = 0.52 
+            DISTANCE_THRESHOLD = 0.68 
             
             for i, (doc, dist) in enumerate(zip(results['documents'][0], results['distances'][0])):
-                source = results['metadatas'][0][i].get('filename', 'Unknown file') if results.get('metadatas') else 'Unknown file'
+                # Extract metadata safely
+                meta = results['metadatas'][0][i] if results.get('metadatas') else {}
+                source_file = meta.get('filename', 'Unknown file')
+                page_num = meta.get('page', None)
+                is_image = meta.get('is_image', False) # Ny variabel: kollar om träffen är en bild
+                
                 accepted = dist < DISTANCE_THRESHOLD
                 
                 # ChromaDB returns distances where lower is better, so we check if the distance is below our threshold
                 status_str = "Relevant" if accepted else "Not enough relevance (neglected)"
-                print(f"Hit {i+1} | File: {source} | Distance: {dist:.4f} -> [{status_str}]")
+                print(f"Hit {i+1} | File: {source_file} | Distance: {dist:.4f} -> [{status_str}]")
                 
+                # Allt detta ligger nu korrekt indenterat under if accepted:
                 if accepted:
-                    matching_docs.append(doc)
-                
-                    # Extract filename and page number from metadata
-                    meta = results['metadatas'][0][i] if results.get('metadatas') else {}
-                    source_file = meta.get('filename', 'Unknown file')
-                    page_num = meta.get('page', None)
-                
                     source_label = f"{source_file} (Page {page_num})" if page_num else source_file
-                if source_label not in used_sources:
-                    used_sources.append(source_label)
-
+                    
+                    # Göm base64-strängen för bilder så chatten inte fryser
+                    if is_image:
+                        matching_docs.append(f"[Systemnotis: En relevant bildfil ({source_label}) hittades. Base64-data dold.]")
+                        retrieved_images.append(doc)
+                    else:
+                        matching_docs.append(doc)
+                
+                    # Kollar unika källor (nu skyddat inuti accepted-blocket)
+                    if source_label not in used_sources:
+                        used_sources.append(source_label)
             print("---------------------------------\n")
             
             if matching_docs:
@@ -127,13 +135,22 @@ def chat_with_gemma(prompt: str):
     else:
         # If no context is found, we just use the original prompt and models own knowledge
         augmented_prompt = prompt
-    chat_history.append({"role": "user", "content": augmented_prompt})
-    
-    # SLIDING WINDOW MEMORY: Keep only the last 4 messages + system prompt to avoid exceeding token limits
-    # Keeps the first system message (index 0) and the last 4 messages from the user and assistant
+    # --- NYTT OCH KORREKT INDENTERAT ---
+    # Detta ska ligga på samma nivå som "if context:" och "else:", INTE inuti dem.
+    if 'retrieved_images' in locals() and retrieved_images:
+        user_content = [{"type": "text", "text": augmented_prompt}]
+        for img_b64 in retrieved_images:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": img_b64}
+            })
+        chat_history.append({"role": "user", "content": user_content})
+    else:
+        chat_history.append({"role": "user", "content": augmented_prompt})
+
+    # SLIDING WINDOW MEMORY: Keep only the last 4 messages + system prompt
     if len(chat_history) > 5:
         chat_history = [chat_history[0]] + chat_history[-4:]
-    
     payload = {
         "model": MODEL_NAME,
         "messages": chat_history,
@@ -142,6 +159,28 @@ def chat_with_gemma(prompt: str):
     }
 
     try:
+        # --- FELSÖKNING: Kontrollera vad vi skickar ---
+        print("\n[DEBUG] Analyserar payload till servern:")
+        for msg in payload["messages"]:
+            if isinstance(msg["content"], list):
+                print(f" - Roll: {msg['role']} skickar en MULTIMODAL lista.")
+                for item in msg["content"]:
+                    if item["type"] == "image_url":
+                        # Skriv bara ut början av base64-strängen för att inte spamma terminalen
+                        preview = item["image_url"]["url"][:40]
+                        print(f"   -> Bild bifogad! (Börjar med: {preview}...)")
+                    elif item["type"] == "text":
+                        print(f"   -> Text bifogad: {item['text'][:40]}...")
+            else:
+                print(f" - Roll: {msg['role']} skickar enbart VANLIG TEXT.")
+        print("----------------------------------------\n")
+
+        # Gör själva anropet till servern
+        res = requests.post(OMLX_CHAT_URL, json=payload, headers=headers, timeout=60, stream=True)
+        res.raise_for_status()
+        
+        print("\n Snuffles: ", end="", flush=True)
+        full_answer = ""
         res = requests.post(OMLX_CHAT_URL, json=payload, headers=headers, timeout=60, stream=True)
         res.raise_for_status()
         
