@@ -15,7 +15,7 @@ OMLX_RERANK_URL = "http://127.0.0.1:8000/v1/rerank"  # Assuming standard local r
 
 MODEL_NAME = "gemma-4-E2B-it-MLX-8bit"
 EMBEDDING_MODEL_NAME = "embeddinggemma-2-bf16"
-# Specify your local reranker model name here (e.g., 'bge-reranker-v2-m3')
+
 RERANKER_MODEL_NAME = "jina-reranker-v3-mlx" 
 
 # --- How ChromaDB should embed and search texts ---
@@ -147,18 +147,27 @@ def chat_with_gemma(prompt: str):
         "Authorization": f"Bearer {OMLX_API_KEY}",
         "Content-Type": "application/json"
     }
-    bypass_phrases = ["own knowledge", "egen kunskap", "utan dokument", "general knowledge"]
-    skip_rag = any(phrase in prompt.lower() for phrase in bypass_phrases)
     
+    # Kollar om "@files" finns med i meddelandet
+    use_rag = "@files" in prompt.lower()
+    
+    # Tvätta bort "@files" från texten så det inte förvirrar sökningen eller modellen
+    clean_prompt = prompt.lower().replace("@files", "").strip()
+    
+    # Fallback om du enbart skrev "@files" utan någon fråga
+    if not clean_prompt:
+        clean_prompt = prompt
+        
     context = ""
     used_sources = []
     retrieved_images = []
     matching_docs = []
     
-    if collection and not skip_rag:
-        # Step 1: Broad Retrieval (fetch 15 documents to give the reranker enough options)
+    # Databassökningen körs ENBART om use_rag är True
+    if collection and use_rag:
+        # Step 1: Broad Retrieval
         results = collection.query(
-            query_texts=[prompt],
+            query_texts=[clean_prompt], # Använd den tvättade frågan
             n_results=15, 
             include=["documents", "distances", "metadatas"]
         )
@@ -166,12 +175,12 @@ def chat_with_gemma(prompt: str):
         if results['documents'] and results['documents'][0]:
             candidate_docs = results['documents'][0]
             candidate_metas = results['metadatas'][0] if results.get('metadatas') else [{}] * len(candidate_docs)
-            candidate_distances = results['distances'][0] # Hämta ut avstånden från ChromaDB
+            candidate_distances = results['distances'][0]
             
-            # Skicka med candidate_distances som det fjärde argumentet
-            ranked_docs, ranked_metas = rerank_documents(prompt, candidate_docs, candidate_metas, candidate_distances)
+            # Skicka den tvättade söksträngen till rerankern
+            ranked_docs, ranked_metas = rerank_documents(clean_prompt, candidate_docs, candidate_metas, candidate_distances)
 
-            # Step 3: Select top 4 highest-scoring documents to prevent context window overload
+            # Step 3: Select top 4 highest-scoring documents
             top_docs = ranked_docs[:4]
             top_metas = ranked_metas[:4]
             
@@ -197,16 +206,15 @@ def chat_with_gemma(prompt: str):
             print("No relevant documents found in ChromaDB.\n")
 
     # Build the augmented prompt
+    # Build the augmented prompt
     if context:
         augmented_prompt = (
         f"Document Context:\n{context}\n\n"
-        f"Question: {prompt}\n\n"
-        f"Instruction: If the user explicitly asks you to answer from your own knowledge "
-        f"or to ignore the context, disregard the documents above completely. Otherwise, "
-        f"primarily use the provided documents if they contain the answer to the question."
+        f"Question: {clean_prompt}\n\n"
+        f"Instruction: Primarily use the provided documents if they contain the answer to the question."
         )
     else:
-        augmented_prompt = prompt
+        augmented_prompt = clean_prompt
 
     # Attach images to the user prompt if any were retrieved
     if retrieved_images:
@@ -267,7 +275,7 @@ def chat_with_gemma(prompt: str):
           print()
           
         if full_answer:
-            chat_history[-1]["content"] = prompt 
+            chat_history[-1]["content"] = clean_prompt 
             chat_history.append({"role": "assistant", "content": full_answer})
         
     except requests.exceptions.RequestException as e:
