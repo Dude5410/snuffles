@@ -59,7 +59,7 @@ collection = client.get_or_create_collection(name="snuffles_docs", embedding_fun
 
 
 def split_text_into_chunks(text: str, chunk_size: int = 1000, overlap: int = 150):
-    """Splits text into overlapping segments to preserve context across boundaries."""
+    # """Splits text into overlapping segments to preserve context across boundaries."""
     chunks = []
     start = 0
     text_length = len(text)
