@@ -17,6 +17,15 @@ chat_history = [
 ]
 
 def chat_with_gemma(prompt: str):
+    #---------Outline of reranking and retrieval steps (not implemented)---------
+    # 1. Retrieval step (Fetch documents from ChromaDB based on prompt)
+    # retrieved_docs = retrieve_from_chroma(prompt)
+
+    # 2. Reranking step (Apply reranker model to re-score retrieved documents)
+    # re_ranked_docs = rerank(prompt, retrieved_docs)
+
+    # 3. Generation step (Use re_ranked_docs as context for Gemma-4)
+    # response = generate_with_gemma(prompt, re_ranked_docs)
     headers = {
         "Authorization": f"Bearer {OMLX_API_KEY}",
         "Content-Type": "application/json"
