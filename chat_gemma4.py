@@ -29,7 +29,7 @@ def chat_with_gemma(prompt: str):
         "model": MODEL_NAME,
         "messages": chat_history,
         "temperature": 0.7,
-        "stream": True  # 1. Berätta för API:et att vi vill streama
+        "stream": True  
     }
 
     try:
