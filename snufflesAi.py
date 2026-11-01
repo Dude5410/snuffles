@@ -1,26 +1,26 @@
-from multiprocessing import context
 import os
 import requests
 import json
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from dotenv import load_dotenv
-from typer import prompt
 
 load_dotenv()
 
-# --- Inställningar ---
+# --- Settings ---
 OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 OMLX_CHAT_URL = "http://127.0.0.1:8000/v1/chat/completions"
 OMLX_EMBEDDING_URL = "http://127.0.0.1:8000/v1/embeddings"
+OMLX_RERANK_URL = "http://127.0.0.1:8000/v1/rerank"  # Assuming standard local rerank endpoint
 
 MODEL_NAME = "gemma-4-E2B-it-MLX-8bit"
 EMBEDDING_MODEL_NAME = "embeddinggemma-2-bf16"
+# Specify your local reranker model name here (e.g., 'bge-reranker-v2-m3')
+RERANKER_MODEL_NAME = "jina-reranker-v3-mlx" 
 
 # --- How ChromaDB should embed and search texts ---
 class OMLXEmbeddingFunction(EmbeddingFunction):
     def __init__(self):
-        # Fixing the warning about the missing __init__ method in the base class
         pass
 
     def __call__(self, input: Documents) -> Embeddings:
@@ -48,7 +48,6 @@ client = chromadb.PersistentClient(path="./chroma_db")
 omlx_ef = OMLXEmbeddingFunction()
 
 try:
-    # Get the collection snuffles_docs if it exists, otherwise set collection to None
     collection = client.get_collection(name="snuffles_docs", embedding_function=omlx_ef)
 except ValueError:
     collection = None
@@ -56,11 +55,93 @@ except ValueError:
 
 # --- Chat history ---
 chat_history = [
-    {"role": "system", "content": "You are Snuffles, the smart dog from rick and morty and a helpful AI assistant. You do not answer questions about yourself, you are a dog, You do not answer questions with emojis. When i am wrong you correct me and explain why i am wrong not just say 'no im sorry' or 'i am right'."}
+    {"role": "system", "content": "You are Snuffles, you are a helpful AI assistant."}
 ]
 
+def rerank_documents(query: str, documents: list, metadatas: list, distances: list) -> tuple:
+    if not documents:
+        return [], []
+
+    text_docs = []
+    text_metas = []
+    image_docs = []
+    image_metas = []
+
+    # Återinför tröskelvärde enbart för bilder (ChromaDB-avstånd, lägre = bättre)
+    IMAGE_DISTANCE_THRESHOLD = 0.60 
+
+    # Separera text och bilder, och filtrera bort dåliga bilder direkt
+    for doc, meta, dist in zip(documents, metadatas, distances):
+        if meta.get('is_image', False):
+            if dist < IMAGE_DISTANCE_THRESHOLD:
+                image_docs.append(doc)
+                image_metas.append(meta)
+            else:
+                print(f"Bild: {meta.get('filename')} | Avstånd: {dist:.4f} -> [Discarded by ChromaDB]")
+        else:
+            text_docs.append(doc)
+            text_metas.append(meta)
+
+    if not text_docs:
+        return image_docs, image_metas
+
+    headers = {
+        "Authorization": f"Bearer {OMLX_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": RERANKER_MODEL_NAME,
+        "query": query,
+        "documents": text_docs
+    }
+
+    try:
+        print(f"\n--- [Reranking {len(text_docs)} documents...] ---")
+        res = requests.post(OMLX_RERANK_URL, json=payload, headers=headers, timeout=30)
+        res.raise_for_status()
+        
+        response_data = res.json()
+        results = response_data.get("results", [])
+        
+        if not results:
+            print("Warning: Reranker returned empty results. Using default ChromaDB order.")
+            return documents, metadatas
+
+        results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
+        
+        ranked_docs = []
+        ranked_metas = []
+        
+        # Höj denna marginellt om texter fortfarande slinker igenom vid korta hälsningar
+        MIN_RERANK_SCORE = 0.20 
+        
+        for rank_item in results:
+            original_idx = rank_item.get("index")
+            score = rank_item.get("relevance_score", 0)
+            meta = text_metas[original_idx]
+            
+            if score >= MIN_RERANK_SCORE:
+                ranked_docs.append(text_docs[original_idx])
+                ranked_metas.append(meta)
+                print(f"File: {meta.get('filename')} | Score: {score:.4f} -> [Relevant]")
+            else:
+                print(f"File: {meta.get('filename')} | Score: {score:.4f} -> [Discarded]")
+        
+        print("---------------------------------\n")
+        
+        final_docs = ranked_docs + image_docs
+        final_metas = ranked_metas + image_metas
+        
+        return final_docs, final_metas
+
+    except requests.exceptions.RequestException as e:
+        print(f"\n[FELSÖKNING] oMLX avvisade anropet: {e}")
+        print("Falling back to standard ChromaDB results.")
+        return documents, metadatas
+
 def chat_with_gemma(prompt: str):
-    global chat_history # Allows us to overwrite the global chat_history variable for sliding window memory
+    global chat_history 
     
     headers = {
         "Authorization": f"Bearer {OMLX_API_KEY}",
@@ -71,60 +152,52 @@ def chat_with_gemma(prompt: str):
     
     context = ""
     used_sources = []
+    retrieved_images = []
+    matching_docs = []
+    
     if collection and not skip_rag:
-        # Make chromadb to find distance between the prompt and the documents in the collection
+        # Step 1: Broad Retrieval (fetch 15 documents to give the reranker enough options)
         results = collection.query(
             query_texts=[prompt],
-            n_results=4,
+            n_results=15, 
             include=["documents", "distances", "metadatas"]
         )
         
-        # Print out the distances in terminal for debugging purposes
-        print("\n--- [Relevance Analysis from documents (lower is better)] ---")
         if results['documents'] and results['documents'][0]:
-            matching_docs = []
-            retrieved_images = []
+            candidate_docs = results['documents'][0]
+            candidate_metas = results['metadatas'][0] if results.get('metadatas') else [{}] * len(candidate_docs)
+            candidate_distances = results['distances'][0] # Hämta ut avstånden från ChromaDB
             
-            # Threshold to determine if a document is relevant enough to include in the context
-            DISTANCE_THRESHOLD = 0.68 
+            # Skicka med candidate_distances som det fjärde argumentet
+            ranked_docs, ranked_metas = rerank_documents(prompt, candidate_docs, candidate_metas, candidate_distances)
+
+            # Step 3: Select top 4 highest-scoring documents to prevent context window overload
+            top_docs = ranked_docs[:4]
+            top_metas = ranked_metas[:4]
             
-            for i, (doc, dist) in enumerate(zip(results['documents'][0], results['distances'][0])):
-                # Extract metadata safely
-                meta = results['metadatas'][0][i] if results.get('metadatas') else {}
+            for doc, meta in zip(top_docs, top_metas):
                 source_file = meta.get('filename', 'Unknown file')
                 page_num = meta.get('page', None)
-                is_image = meta.get('is_image', False) # Ny variabel: kollar om träffen är en bild
+                is_image = meta.get('is_image', False)
                 
-                accepted = dist < DISTANCE_THRESHOLD
+                source_label = f"{source_file} (Page {page_num})" if page_num else source_file
                 
-                # ChromaDB returns distances where lower is better, so we check if the distance is below our threshold
-                status_str = "Relevant" if accepted else "Not enough relevance (neglected)"
-                print(f"Hit {i+1} | File: {source_file} | Distance: {dist:.4f} -> [{status_str}]")
-                
-                # Allt detta ligger nu korrekt indenterat under if accepted:
-                if accepted:
-                    source_label = f"{source_file} (Page {page_num})" if page_num else source_file
-                    
-                    # Göm base64-strängen för bilder så chatten inte fryser
-                    if is_image:
-                        matching_docs.append(f"[Systemnotis: En relevant bildfil ({source_label}) hittades. Base64-data dold.]")
-                        retrieved_images.append(doc)
-                    else:
-                        matching_docs.append(doc)
-                
-                    # Kollar unika källor (nu skyddat inuti accepted-blocket)
-                    if source_label not in used_sources:
-                        used_sources.append(source_label)
-            print("---------------------------------\n")
+                if is_image:
+                    matching_docs.append(f"[System notification: A relevant image file ({source_label}) was found. Base64 data hidden.]")
+                    retrieved_images.append(doc)
+                else:
+                    matching_docs.append(doc)
+            
+                if source_label not in used_sources:
+                    used_sources.append(source_label)
             
             if matching_docs:
                 context = "\n\n---\n\n".join(matching_docs)
         else:
-            print("No relevant documents found.")
-            print("---------------------------------\n")
-    # Build the augmented prompt with context if available
+            print("No relevant documents found in ChromaDB.\n")
+
+    # Build the augmented prompt
     if context:
-        
         augmented_prompt = (
         f"Document Context:\n{context}\n\n"
         f"Question: {prompt}\n\n"
@@ -133,11 +206,10 @@ def chat_with_gemma(prompt: str):
         f"primarily use the provided documents if they contain the answer to the question."
         )
     else:
-        # If no context is found, we just use the original prompt and models own knowledge
         augmented_prompt = prompt
-    # --- NYTT OCH KORREKT INDENTERAT ---
-    # Detta ska ligga på samma nivå som "if context:" och "else:", INTE inuti dem.
-    if 'retrieved_images' in locals() and retrieved_images:
+
+    # Attach images to the user prompt if any were retrieved
+    if retrieved_images:
         user_content = [{"type": "text", "text": augmented_prompt}]
         for img_b64 in retrieved_images:
             user_content.append({
@@ -151,6 +223,7 @@ def chat_with_gemma(prompt: str):
     # SLIDING WINDOW MEMORY: Keep only the last 4 messages + system prompt
     if len(chat_history) > 5:
         chat_history = [chat_history[0]] + chat_history[-4:]
+        
     payload = {
         "model": MODEL_NAME,
         "messages": chat_history,
@@ -159,28 +232,7 @@ def chat_with_gemma(prompt: str):
     }
 
     try:
-        # --- FELSÖKNING: Kontrollera vad vi skickar ---
-        print("\n[DEBUG] Analyserar payload till servern:")
-        for msg in payload["messages"]:
-            if isinstance(msg["content"], list):
-                print(f" - Roll: {msg['role']} skickar en MULTIMODAL lista.")
-                for item in msg["content"]:
-                    if item["type"] == "image_url":
-                        # Skriv bara ut början av base64-strängen för att inte spamma terminalen
-                        preview = item["image_url"]["url"][:40]
-                        print(f"   -> Bild bifogad! (Börjar med: {preview}...)")
-                    elif item["type"] == "text":
-                        print(f"   -> Text bifogad: {item['text'][:40]}...")
-            else:
-                print(f" - Roll: {msg['role']} skickar enbart VANLIG TEXT.")
-        print("----------------------------------------\n")
-
-        # Gör själva anropet till servern
-        res = requests.post(OMLX_CHAT_URL, json=payload, headers=headers, timeout=60, stream=True)
-        res.raise_for_status()
-        
-        print("\n Snuffles: ", end="", flush=True)
-        full_answer = ""
+        # Communication with oMLX server for Generation
         res = requests.post(OMLX_CHAT_URL, json=payload, headers=headers, timeout=60, stream=True)
         res.raise_for_status()
         
@@ -196,16 +248,13 @@ def chat_with_gemma(prompt: str):
                         break
                     try:
                         data_json = json.loads(data_str)
-                        
-                        # --- FIX 2: SÄKER JSON-PARSNING ---
-                        # Kontrollerar om servern skickade riktig chatt-data eller ett felmeddelande
                         if "choices" in data_json:
                             chunk = data_json["choices"][0]["delta"].get("content", "")
                             if chunk:
                                 print(chunk, end="", flush=True)
                                 full_answer += chunk
                         elif "error" in data_json:
-                            print(f"\n[Serverfel]: {data_json['error']}")
+                            print(f"\n[Server Error]: {data_json['error']}")
                             
                     except json.JSONDecodeError:
                         pass
@@ -216,7 +265,7 @@ def chat_with_gemma(prompt: str):
           for src in used_sources:
             print(f"  • {src}")
           print()
-        # If we got a full answer, we update the last user message to be the original prompt and append the assistant's response
+          
         if full_answer:
             chat_history[-1]["content"] = prompt 
             chat_history.append({"role": "assistant", "content": full_answer})
@@ -226,7 +275,7 @@ def chat_with_gemma(prompt: str):
 
 
 if __name__ == "__main__":
-    print("=== Snuffles AI ===")
+    print("=== Snuffles AI===")
     while True:
         user_input = input("You: ")
         if user_input.lower() in ['exit', 'quit']:
