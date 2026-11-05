@@ -37,8 +37,12 @@ class OMLXEmbeddingFunction(EmbeddingFunction):
             try:
                 res = requests.post(OMLX_EMBEDDING_URL, json=payload, headers=headers)
                 res.raise_for_status()
+                res_data = res.json()
                 vector = res.json()["data"][0]["embedding"]
                 embeddings.append(vector)
+                global token_usage
+                if "usage" in res_data:
+                    token_usage["embedding"] += res_data["usage"].get("prompt_tokens", 0)
             except Exception as e:
                 print(f"Error when vectorizing: {e}")
         return embeddings
@@ -57,6 +61,11 @@ except ValueError:
 chat_history = [
     {"role": "system", "content": "You are Snuffles, you are a helpful AI assistant."}
 ]
+token_usage = {
+    "chat": 0,
+    "embedding": 0,
+    "reranker": 0
+}
 
 def rerank_documents(query: str, documents: list, metadatas: list, distances: list) -> tuple:
     if not documents:
@@ -102,6 +111,9 @@ def rerank_documents(query: str, documents: list, metadatas: list, distances: li
         res.raise_for_status()
         
         response_data = res.json()
+        global token_usage
+        if "usage" in response_data:
+            token_usage["reranker"] += response_data["usage"].get("total_tokens", 0)
         results = response_data.get("results", [])
         
         if not results:
@@ -136,11 +148,11 @@ def rerank_documents(query: str, documents: list, metadatas: list, distances: li
         return final_docs, final_metas
 
     except requests.exceptions.RequestException as e:
-        print(f"\n[FELSÖKNING] oMLX avvisade anropet: {e}")
+        print(f"\noMLX rejected request: {e}")
         print("Falling back to standard ChromaDB results.")
         return documents, metadatas
 
-def chat_with_gemma(prompt: str):
+def chat_with_gemma(prompt: str, is_gui=False):
     global chat_history 
     
     headers = {
@@ -236,51 +248,84 @@ def chat_with_gemma(prompt: str):
         "model": MODEL_NAME,
         "messages": chat_history,
         "temperature": 0.7,
-        "stream": True
+        "stream": True,
+        "stream_options": {"include_usage": True}
     }
 
     try:
-        # Communication with oMLX server for Generation
         res = requests.post(OMLX_CHAT_URL, json=payload, headers=headers, timeout=60, stream=True)
         res.raise_for_status()
-        
-        print("\n Snuffles: ", end="", flush=True)
-        full_answer = ""
-        
-        for line in res.iter_lines():
-            if line:
-                line_str = line.decode('utf-8')
-                if line_str.startswith("data: "):
-                    data_str = line_str[6:]
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        data_json = json.loads(data_str)
-                        if "choices" in data_json:
-                            chunk = data_json["choices"][0]["delta"].get("content", "")
-                            if chunk:
-                                print(chunk, end="", flush=True)
-                                full_answer += chunk
-                        elif "error" in data_json:
-                            print(f"\n[Server Error]: {data_json['error']}")
-                            
-                    except json.JSONDecodeError:
-                        pass
-        
-        print("\n")
-        if used_sources:
-          print(" Sources used:")
-          for src in used_sources:
-            print(f"  • {src}")
-          print()
-          
-        if full_answer:
-            chat_history[-1]["content"] = clean_prompt 
-            chat_history.append({"role": "assistant", "content": full_answer})
+
+        if is_gui:
+            # GUI-läge: Skapar en generator för Streamlits st.write_stream
+            def stream_generator():
+                full_answer = ""
+                for line in res.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith("data: "):
+                            data_str = line_str[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data_json = json.loads(data_str)
+                                if "choices" in data_json and len(data_json["choices"]) > 0:
+                                    chunk = data_json["choices"][0]["delta"].get("content", "")
+                                    if chunk:
+                                        full_answer += chunk
+                                        yield chunk
+                                
+                                # Fånga chatt tokens från sista paketet
+                                if "usage" in data_json and data_json["usage"]:
+                                    global token_usage
+                                    token_usage["chat"] += data_json["usage"].get("total_tokens", 0)
+                            except json.JSONDecodeError:
+                                pass
+                if full_answer:
+                    chat_history[-1]["content"] = clean_prompt 
+                    chat_history.append({"role": "assistant", "content": full_answer})
+            return stream_generator(), used_sources
+
+        else:
+            # Terminalläge: Din befintliga utskriftskod
+            print("\n Snuffles: ", end="", flush=True)
+            full_answer = ""
+            
+            for line in res.iter_lines():
+                if line:
+                    line_str = line.decode('utf-8')
+                    if line_str.startswith("data: "):
+                        data_str = line_str[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data_json = json.loads(data_str)
+                            if "choices" in data_json:
+                                chunk = data_json["choices"][0]["delta"].get("content", "")
+                                if chunk:
+                                    print(chunk, end="", flush=True)
+                                    full_answer += chunk
+                            elif "error" in data_json:
+                                print(f"\n[Server Error]: {data_json['error']}")
+                                
+                        except json.JSONDecodeError:
+                            pass
+            
+            print("\n")
+            if used_sources:
+              print(" Sources used:")
+              for src in used_sources:
+                print(f"  • {src}")
+              print()
+              
+            if full_answer:
+                chat_history[-1]["content"] = clean_prompt 
+                chat_history.append({"role": "assistant", "content": full_answer})
         
     except requests.exceptions.RequestException as e:
+        if is_gui:
+            return f"Kunde inte nå modellen. Fel: {e}", []
         print(f"\nCould not reach the model. Error: {e}\n")
-
 
 if __name__ == "__main__":
     print("=== Snuffles AI===")
