@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 
 
 # Ställ in flikens namn och titel på sidan
-st.set_page_config(page_title="Snuffles AI", page_icon="🤖")
+st.set_page_config(page_title="Snuffles AI", page_icon="-")
 st.title("Snuffles")
 
 # Skapa ett minne för chattmeddelandena om det inte redan finns
