@@ -66,6 +66,12 @@ token_usage = {
     "embedding": 0,
     "reranker": 0
 }
+def truncate_filename(filename: str, max_len: int = 10) -> str:
+    
+    if len(filename) > max_len:
+        # Skär av och lägg till "..."
+        return filename[:max_len - 3] + "..."
+    return filename
 
 def rerank_documents(query: str, documents: list, metadatas: list, distances: list) -> tuple:
     if not documents:
@@ -125,8 +131,8 @@ def rerank_documents(query: str, documents: list, metadatas: list, distances: li
         ranked_docs = []
         ranked_metas = []
         
-        # Höj denna marginellt om texter fortfarande slinker igenom vid korta hälsningar
-        MIN_RERANK_SCORE = 0.20 
+        
+        MIN_RERANK_SCORE = 0.10 
         
         for rank_item in results:
             original_idx = rank_item.get("index")
@@ -136,9 +142,9 @@ def rerank_documents(query: str, documents: list, metadatas: list, distances: li
             if score >= MIN_RERANK_SCORE:
                 ranked_docs.append(text_docs[original_idx])
                 ranked_metas.append(meta)
-                print(f"File: {meta.get('filename')} | Score: {score:.4f} -> [Relevant]")
+                print(f"File: {truncate_filename(meta.get('filename'))} | Score: {score:.4f} -> [Relevant]")
             else:
-                print(f"File: {meta.get('filename')} | Score: {score:.4f} -> [Discarded]")
+                print(f"File: {truncate_filename(meta.get('filename'))} | Score: {score:.4f} -> [Discarded]")
         
         print("---------------------------------\n")
         
