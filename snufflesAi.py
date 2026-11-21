@@ -7,18 +7,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Settings ---
+# --- URLS and API retrival ---
 OMLX_API_KEY = os.getenv("OMLX_API_KEY", "")
 OMLX_CHAT_URL = "http://127.0.0.1:8000/v1/chat/completions"
 OMLX_EMBEDDING_URL = "http://127.0.0.1:8000/v1/embeddings"
-OMLX_RERANK_URL = "http://127.0.0.1:8000/v1/rerank"  # Assuming standard local rerank endpoint
+OMLX_RERANK_URL = "http://127.0.0.1:8000/v1/rerank" 
 
 MODEL_NAME = "gemma-4-E2B-it-MLX-8bit"
 EMBEDDING_MODEL_NAME = "embeddinggemma-2-bf16"
 
 RERANKER_MODEL_NAME = "jina-reranker-v3-mlx" 
 
-# --- How ChromaDB should embed and search texts ---
+# --- ChromaDB embed and search texts ---
 class OMLXEmbeddingFunction(EmbeddingFunction):
     def __init__(self):
         pass
@@ -82,10 +82,10 @@ def rerank_documents(query: str, documents: list, metadatas: list, distances: li
     image_docs = []
     image_metas = []
 
-    # Återinför tröskelvärde enbart för bilder (ChromaDB-avstånd, lägre = bättre)
+    # Threshold for images (ChromaDB-distance, lower = better)
     IMAGE_DISTANCE_THRESHOLD = 0.60 
 
-    # Separera text och bilder, och filtrera bort dåliga bilder direkt
+    # Seperate image and text
     for doc, meta, dist in zip(documents, metadatas, distances):
         if meta.get('is_image', False):
             if dist < IMAGE_DISTANCE_THRESHOLD:
@@ -166,13 +166,13 @@ def chat_with_gemma(prompt: str, is_gui=False):
         "Content-Type": "application/json"
     }
     
-    # Kollar om "@files" finns med i meddelandet
+    # Check if keyword is in prompt
     use_rag = "@files" in prompt.lower()
     
-    # Tvätta bort "@files" från texten så det inte förvirrar sökningen eller modellen
+    # Remove keyword from prompts so it dont wash down prompt
     clean_prompt = prompt.lower().replace("@files", "").strip()
     
-    # Fallback om du enbart skrev "@files" utan någon fråga
+    # 
     if not clean_prompt:
         clean_prompt = prompt
         
@@ -181,11 +181,11 @@ def chat_with_gemma(prompt: str, is_gui=False):
     retrieved_images = []
     matching_docs = []
     
-    # Databassökningen körs ENBART om use_rag är True
+    # 
     if collection and use_rag:
-        # Step 1: Broad Retrieval
+        # Broad Retrieval
         results = collection.query(
-            query_texts=[clean_prompt], # Använd den tvättade frågan
+            query_texts=[clean_prompt], 
             n_results=15, 
             include=["documents", "distances", "metadatas"]
         )
@@ -198,7 +198,7 @@ def chat_with_gemma(prompt: str, is_gui=False):
             # Skicka den tvättade söksträngen till rerankern
             ranked_docs, ranked_metas = rerank_documents(clean_prompt, candidate_docs, candidate_metas, candidate_distances)
 
-            # Step 3: Select top 4 highest-scoring documents
+            # Select top 4 highest-scoring documents
             top_docs = ranked_docs[:4]
             top_metas = ranked_metas[:4]
             
@@ -223,7 +223,6 @@ def chat_with_gemma(prompt: str, is_gui=False):
         else:
             print("No relevant documents found in ChromaDB.\n")
 
-    # Build the augmented prompt
     # Build the augmented prompt
     if context:
         augmented_prompt = (
